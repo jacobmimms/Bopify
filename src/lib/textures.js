@@ -13,5 +13,10 @@ export function getAlbumImage(url) {
     img.src = url
   })
   cache.set(url, p)
+  // Don't let a transient load failure poison the cache forever — drop the
+  // rejected entry so a later visit retries.
+  p.catch(() => {
+    if (cache.get(url) === p) cache.delete(url)
+  })
   return p
 }

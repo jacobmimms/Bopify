@@ -88,6 +88,12 @@ export default function Experience({ onLogout }) {
     }
     const onMove = (e) => {
       if (!drag.current.active) return
+      // Self-correct if a release was missed (button let go outside the window):
+      // no buttons down means the drag is over.
+      if (e.buttons === 0) {
+        drag.current.active = false
+        return
+      }
       const s = invertRef.current ? -1 : 1
       controller.applyLook((e.clientX - drag.current.x) * s, (e.clientY - drag.current.y) * s)
       drag.current.x = e.clientX
@@ -99,10 +105,16 @@ export default function Experience({ onLogout }) {
     window.addEventListener('pointerdown', onDown)
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)
+    // pointercancel (touch gestures) and blur (release outside the window) also
+    // end the drag — otherwise the view keeps spinning with no button held.
+    window.addEventListener('pointercancel', onUp)
+    window.addEventListener('blur', onUp)
     return () => {
       window.removeEventListener('pointerdown', onDown)
       window.removeEventListener('pointermove', onMove)
       window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onUp)
+      window.removeEventListener('blur', onUp)
     }
   }, [controller])
 

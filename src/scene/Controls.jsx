@@ -25,18 +25,33 @@ export default function Controls({ controller, barVisible = true }) {
       ArrowDown: { x: 0, y: -1 },
     }
 
+    // Canonicalise so a key added on keydown is removed by keyup even if
+    // Shift/CapsLock flipped its case in between — otherwise 'w' and 'W' desync
+    // and a phantom key strands the input, so the camera moves forever.
+    const canon = (k) => (k.length === 1 ? k.toLowerCase() : k)
+    const isTyping = () => {
+      const el = document.activeElement
+      return (
+        !!el &&
+        (el.tagName === 'INPUT' || el.tagName === 'SELECT' || el.tagName === 'TEXTAREA')
+      )
+    }
+
     function recompute() {
       const move = { x: 0, y: 0 }
       const turn = { x: 0, y: 0 }
-      for (const key of pressed) {
-        const k = key.length === 1 ? key.toLowerCase() : key
-        if (MOVE[k]) {
-          move.x += MOVE[k].x
-          move.y += MOVE[k].y
-        }
-        if (TURN[k]) {
-          turn.x += TURN[k].x
-          turn.y += TURN[k].y
+      // Hold movement while typing in a field, but keep tracking keys so releases
+      // stay symmetric.
+      if (!isTyping()) {
+        for (const k of pressed) {
+          if (MOVE[k]) {
+            move.x += MOVE[k].x
+            move.y += MOVE[k].y
+          }
+          if (TURN[k]) {
+            turn.x += TURN[k].x
+            turn.y += TURN[k].y
+          }
         }
       }
       controller.setMove(move.x, move.y)
@@ -44,20 +59,33 @@ export default function Controls({ controller, barVisible = true }) {
     }
 
     const down = (e) => {
-      // don't hijack typing in inputs
-      if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return
-      pressed.add(e.key)
+      if (isTyping()) return // don't hijack typing in inputs
+      pressed.add(canon(e.key))
       recompute()
     }
     const up = (e) => {
-      pressed.delete(e.key)
+      pressed.delete(canon(e.key))
       recompute()
+    }
+    // Focus/visibility loss can swallow the keyup, leaving a key stranded. Flush
+    // held keys whenever the window can no longer receive them (alt-tab, clicking
+    // the SDK iframe, switching tabs).
+    const flush = () => {
+      pressed.clear()
+      recompute()
+    }
+    const onVisibility = () => {
+      if (document.hidden) flush()
     }
     window.addEventListener('keydown', down)
     window.addEventListener('keyup', up)
+    window.addEventListener('blur', flush)
+    document.addEventListener('visibilitychange', onVisibility)
     return () => {
       window.removeEventListener('keydown', down)
       window.removeEventListener('keyup', up)
+      window.removeEventListener('blur', flush)
+      document.removeEventListener('visibilitychange', onVisibility)
     }
   }, [controller])
 

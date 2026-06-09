@@ -22,6 +22,7 @@ const SCOPES = [
 
 const STORAGE_KEY = 'bopify_auth'
 const VERIFIER_KEY = 'bopify_pkce_verifier'
+const STATE_KEY = 'bopify_oauth_state'
 
 // Redirect URI must EXACTLY match one registered in the Spotify dashboard.
 function redirectUri() {
@@ -79,6 +80,7 @@ export function isLoggedIn() {
 export function logout() {
   localStorage.removeItem(STORAGE_KEY)
   localStorage.removeItem(VERIFIER_KEY)
+  localStorage.removeItem(STATE_KEY)
 }
 
 // --- public flow ------------------------------------------------------------
@@ -92,6 +94,10 @@ export async function login() {
   localStorage.setItem(VERIFIER_KEY, verifier)
   const challenge = base64UrlEncode(await sha256(verifier))
 
+  // CSRF protection: a random state echoed back on /callback and verified there.
+  const state = randomString(32)
+  localStorage.setItem(STATE_KEY, state)
+
   const params = new URLSearchParams({
     client_id: CLIENT_ID,
     response_type: 'code',
@@ -99,6 +105,7 @@ export async function login() {
     scope: SCOPES,
     code_challenge_method: 'S256',
     code_challenge: challenge,
+    state,
   })
   window.location.assign(`${AUTH_ENDPOINT}?${params}`)
 }
@@ -111,6 +118,13 @@ export async function handleCallback() {
 
   const code = params.get('code')
   if (!code) throw new Error('No authorization code in callback URL')
+
+  const returnedState = params.get('state')
+  const expectedState = localStorage.getItem(STATE_KEY)
+  localStorage.removeItem(STATE_KEY)
+  if (!expectedState || returnedState !== expectedState) {
+    throw new Error('State mismatch — possible CSRF, restart login')
+  }
 
   const verifier = localStorage.getItem(VERIFIER_KEY)
   if (!verifier) throw new Error('Missing PKCE verifier — restart login')
@@ -147,6 +161,20 @@ export async function getAccessToken() {
   }
 
   // De-duplicate concurrent refreshes.
+  if (!refreshPromise) {
+    refreshPromise = doRefresh(stored.refresh_token).finally(() => {
+      refreshPromise = null
+    })
+  }
+  return refreshPromise
+}
+
+// Force a refresh regardless of the clock — used to recover from a 401 on a token
+// Spotify invalidated before its stated expiry. De-duped against getAccessToken's
+// concurrent refreshes via the shared refreshPromise.
+export async function refreshAccessToken() {
+  const stored = readStored()
+  if (!stored?.refresh_token) return null
   if (!refreshPromise) {
     refreshPromise = doRefresh(stored.refresh_token).finally(() => {
       refreshPromise = null

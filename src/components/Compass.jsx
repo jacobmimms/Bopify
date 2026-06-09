@@ -9,10 +9,15 @@ export default function Compass({ controller, year }) {
 
   useEffect(() => {
     let raf
+    let last = null
     const tick = () => {
       if (ringRef.current) {
         const deg = (controller.state.yaw * 180) / Math.PI
-        ringRef.current.style.transform = `rotate(${deg}deg)`
+        // Only touch the DOM when the heading actually changed.
+        if (last === null || Math.abs(deg - last) > 0.05) {
+          ringRef.current.style.transform = `rotate(${deg}deg)`
+          last = deg
+        }
       }
       raf = requestAnimationFrame(tick)
     }

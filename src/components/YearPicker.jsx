@@ -36,6 +36,10 @@ export default function YearPicker({ activeYear, onPick }) {
     setCentered(activeYear)
   }, [activeYear])
 
+  // Cancel a pending teleport if the picker unmounts (e.g. toggled off) so it
+  // can't yank the camera after it's gone.
+  useEffect(() => () => clearTimeout(settle.current), [])
+
   const scheduleTeleport = (year) => {
     clearTimeout(settle.current)
     settle.current = setTimeout(() => {

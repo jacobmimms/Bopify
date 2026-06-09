@@ -32,6 +32,13 @@ const rnd = (i, j) => {
 const cellOf = (p) => [Math.round(p.x / ROOM), Math.round(p.z / ROOM)]
 const cellCenter = (i, j) => [i * ROOM, j * ROOM]
 const wrap = (n, len) => ((n % len) + len) % len
+// Identity stable across editions (remaster / single / compilation) so the same
+// song isn't placed in two adjacent year rows. ISRC if present, else name+artist.
+const trackIdentity = (t) =>
+  (
+    t.external_ids?.isrc ||
+    `${t.name}|${t.artists?.[0]?.id || t.artists?.[0]?.name || ''}`
+  ).toLowerCase()
 const yearForRow = (j) => {
   const y = CURRENT_YEAR + j
   return y < MIN_YEAR || y > CURRENT_YEAR ? null : y
@@ -62,6 +69,9 @@ export default function World({ controller, deviceId, player, genre, onMeta }) {
   const transferred = useRef(false)
   const lastMetaId = useRef('__init__') // skip redundant onMeta/accent work
   const genreInit = useRef(true)
+  const genreEpoch = useRef(0) // invalidates in-flight searches after a genre switch
+  const playGen = useRef(0) // invalidates stale in-flight play/pause calls
+  const usedTracks = useRef(new Map()) // track identity -> owning year (cross-year dedup)
   // Incremental scene structures (built O(1) per room, not re-aggregated O(N)).
   const roomsList = useRef([]) // [{ k, center, track }]
   const albumColMap = useRef(new Map()) // colKey -> { position, contribs }
@@ -82,13 +92,26 @@ export default function World({ controller, deviceId, player, genre, onMeta }) {
   function ensureRow(year) {
     if (year == null || rows.current.has(year) || loading.current.has(year)) return
     loading.current.add(year)
+    const epoch = genreEpoch.current
     searchTracks(year, genre, market.current)
       .then((tracks) => {
-        rows.current.set(year, tracks)
+        if (epoch !== genreEpoch.current) return // a genre switch superseded this
+        // Cross-year dedup: skip any track already claimed by another year's row
+        // so the same song doesn't show up in two rows (e.g. 2025 and 2026).
+        const deduped = tracks.filter((t) => {
+          const id = trackIdentity(t)
+          const owner = usedTracks.current.get(id)
+          if (owner != null && owner !== year) return false
+          usedTracks.current.set(id, year)
+          return true
+        })
+        rows.current.set(year, deduped)
         setVersion((v) => v + 1)
       })
-      .catch(() => { })
-      .finally(() => loading.current.delete(year))
+      .catch(() => {})
+      .finally(() => {
+        if (epoch === genreEpoch.current) loading.current.delete(year)
+      })
   }
 
   const trackForCell = (i, j) => {
@@ -115,7 +138,10 @@ export default function World({ controller, deviceId, player, genre, onMeta }) {
           entry = { position: [cx + o[0], 0, cz + o[1]], contribs: [] }
           albumColMap.current.set(ck, entry)
         }
-        entry.contribs.push({ region, slice, url })
+        // New array reference each time so AlbumColumn's [contribs] effect re-runs
+        // and repaints the shared column with the newly added slice (a column on a
+        // room boundary otherwise keeps only the first room's slice).
+        entry.contribs = [...entry.contribs, { region, slice, url }]
       }
     }
     setRoomVersion((v) => v + 1)
@@ -145,10 +171,13 @@ export default function World({ controller, deviceId, player, genre, onMeta }) {
       genreInit.current = false
       return
     }
+    genreEpoch.current++ // drop any in-flight old-genre searches
+    playGen.current++ // drop any in-flight old-genre play/pause
     rows.current.clear()
     loading.current.clear()
     visited.current.clear()
     positions.current.clear()
+    usedTracks.current.clear()
     roomsList.current = []
     albumColMap.current = new Map()
     currentId.current = null
@@ -220,38 +249,58 @@ export default function World({ controller, deviceId, player, genre, onMeta }) {
     clearTimeout(playTimer.current)
     if (track && track.id === currentId.current) return
     pauseNow()
-    if (track) playTimer.current = setTimeout(() => playSafely(track, k), 220)
+    if (track) {
+      const gen = playGen.current
+      playTimer.current = setTimeout(() => playSafely(track, k, gen), 220)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playerCell, version, marketReady, deviceId])
+
+  // Bounded resume-position store (most-recent rooms only) so a long session
+  // doesn't grow this Map without limit. Map keeps insertion order → first key
+  // is the oldest.
+  function rememberPosition(cellKey, pos) {
+    const m = positions.current
+    if (m.has(cellKey)) m.delete(cellKey)
+    m.set(cellKey, pos)
+    if (m.size > 300) m.delete(m.keys().next().value)
+  }
 
   function pauseNow() {
     if (currentId.current === null) return
     const leaving = playingCell.current
     currentId.current = null
     playingCell.current = null
+    playGen.current++ // any in-flight play for the room we're leaving is now stale
     if (!player) return
-    // capture position so we resume this room where we left off
-    player
-      .getCurrentState()
-      .then((s) => {
-        if (s && leaving) positions.current.set(leaving, s.position)
-      })
-      .catch(() => { })
-      .finally(() => player.pause()?.catch?.(() => { }))
+    // Pause immediately so it can't land AFTER the next room's track starts.
+    player.pause()?.catch?.(() => {})
+    // Capture resume position separately — does NOT gate the pause.
+    if (leaving) {
+      player
+        .getCurrentState()
+        .then((s) => {
+          if (s) rememberPosition(leaving, s.position)
+        })
+        .catch(() => {})
+    }
   }
 
-  async function playSafely(track, cellKey) {
-    if (!deviceId) return
+  async function playSafely(track, cellKey, gen) {
+    if (!deviceId || gen !== playGen.current) return
     currentId.current = track.id
     playingCell.current = cellKey
     const pos = positions.current.get(cellKey) || 0
     try {
       await playTrack(deviceId, track.uri, pos)
     } catch {
+      if (gen !== playGen.current) return
       try {
         await transferPlayback(deviceId, false)
+        if (gen !== playGen.current) return
         await playTrack(deviceId, track.uri, pos)
       } catch {
+        if (gen !== playGen.current) return
         currentId.current = null
         playingCell.current = null
       }

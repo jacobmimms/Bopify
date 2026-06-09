@@ -22,10 +22,17 @@ export function getPalette(url) {
       try {
         resolve(samplePalette(img))
       } catch {
-        resolve(FALLBACK) // tainted canvas / decode error
+        // tainted canvas / decode error — don't cache it, allow a retry
+        if (cache.get(url) === promise) cache.delete(url)
+        resolve(FALLBACK)
       }
     }
-    img.onerror = () => resolve(FALLBACK)
+    img.onerror = () => {
+      // transient load/CORS failure — drop it so a later call re-samples instead
+      // of leaving the room's tint/accent stuck on the fallback green.
+      if (cache.get(url) === promise) cache.delete(url)
+      resolve(FALLBACK)
+    }
     img.src = url
   })
 

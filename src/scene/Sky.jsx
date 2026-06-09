@@ -41,6 +41,10 @@ function SunTitle({ title }) {
     return t
   }, [title])
 
+  // Free the previous GPU texture when the title changes (and on unmount) —
+  // otherwise each new track leaks a CanvasTexture.
+  useEffect(() => () => tex.dispose(), [tex])
+
   return (
     <mesh position={[0, 5, 1]}>
       <planeGeometry args={[240, 35]} />

@@ -54,13 +54,20 @@ export function createCameraController() {
       state.position.set(0, EYE, 0)
       state.yaw = 0
       state.pitch = 0
+      state.moveInput.x = state.moveInput.y = 0
+      state.turnInput.x = state.turnInput.y = 0
       velocity.set(0, 0, 0)
+      yawVel = 0
     },
-    // Teleport on the XZ plane (used by the year picker).
+    // Teleport on the XZ plane (used by the year picker). Clear input/momentum so
+    // a key/stick held during the jump doesn't immediately drift you off the row.
     jumpTo(x, z) {
       state.position.x = x
       state.position.z = z
+      state.moveInput.x = state.moveInput.y = 0
+      state.turnInput.x = state.turnInput.y = 0
       velocity.set(0, 0, 0)
+      yawVel = 0
     },
     update(dt) {
       const delta = Math.min(dt, 0.05)

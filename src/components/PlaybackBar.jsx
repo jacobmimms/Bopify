@@ -39,8 +39,24 @@ export default function PlaybackBar({ player, meta }) {
     if (!player) return
     let alive = true
     const poll = async () => {
+      if (document.hidden) return
       const s = await player.getCurrentState()
-      if (alive && !seeking.current) setSt(s)
+      if (!alive || seeking.current) return
+      // Skip the re-render when nothing relevant changed (idle/paused) so the HUD
+      // doesn't re-commit 4×/sec for the whole session.
+      setSt((prev) => {
+        if (
+          prev &&
+          s &&
+          prev.paused === s.paused &&
+          prev.position === s.position &&
+          prev.duration === s.duration &&
+          prev.track_window?.current_track?.id === s.track_window?.current_track?.id
+        ) {
+          return prev
+        }
+        return s
+      })
     }
     poll()
     const id = setInterval(poll, 250)
